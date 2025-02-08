@@ -1,0 +1,131 @@
+---
+title: "03_mfis_to_heatmap"
+date: "2025-01-31"
+output:
+  html_document:
+    fig_width: 11
+    code_folding: hide
+    toc: true
+    toc_float: false
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE}
+if (!require(pheatmap)) install.packages("pheatmap")
+library(pheatmap)
+if (!require(readxl)) install.packages("readxl")
+```
+
+
+## Helping functions
+
+In order to simplify the code, we define a heatmap function with some default parameters and some contants.
+
+```{r}
+pheatmap_default <- function(
+    ...,  # all parameters
+    cluster_rows = FALSE,  # no clustering of rows
+    cluster_cols = FALSE,  # no clustering of columns 
+    breaks
+) {
+  if (!missing(breaks)) {
+    if (length(breaks) == 1) breaks = c(-1, 1) * breaks
+    if (length(breaks) == 2) breaks = seq(breaks[1], breaks[2], length.out = 101)
+    pheatmap(
+      ..., cluster_rows = cluster_rows, cluster_cols = cluster_cols, breaks = breaks
+    )
+  } else {
+    pheatmap(
+      ..., cluster_rows = cluster_rows, cluster_cols = cluster_cols
+    )
+  }
+}
+cs_top = "#D73020"
+cs_mid = "#FEFEBF"
+cs_bot = "#4575B4"
+```
+
+
+## Reading MFI
+
+We read the prepared matrix of MFIs as well as the sample information.
+
+```{r}
+
+# ==== READING ALL PREPARED DATA FROM R ========================================
+
+load("output/mfis_Assignment.RData")
+
+```
+
+## Transforming
+
+We will start with the display of the raw MFIs although it is not ready for an interpretation. As the MFIs were extracted without any transformation, we apply the asinh function with a cofactor of 5 for mass cytometry.
+
+```{r}
+mfis = asinh(mfis/5)
+pheatmap_default(mfis)
+```
+
+The color scale covers automatically the range of transformed intensities across all the matrix. There is a high value in CD38 marker that reduces the available colors in the other markers.
+
+
+## Normalizing to the maximum per marker
+
+To adjust the color scale per marker, each marker is scaled independently.
+
+```{r}
+mfis_max = apply(mfis, 2, max)
+mfis_to_max = sweep(mfis, 2, mfis_max, "/")
+
+pheatmap_default(mfis_to_max)
+```
+
+This leads to a better and finer reading. Care must be taken with lowly expressed markers.
+
+
+## Normalizing to the minimum and maximum per marker
+
+The adjustment could take into account the minimum and the maximum of each marker, each marker being scaled independently.
+
+```{r}
+mfis_min = apply(mfis, 2, min)
+mfis_to_min_max = sweep(mfis, 2, mfis_min, "-")
+mfis_max = apply(mfis_to_min_max, 2, max)
+mfis_to_min_max = sweep(mfis_to_min_max, 2, mfis_max, "/")
+
+pheatmap_default(mfis_to_min_max)
+```
+
+This leads to a better and finer reading. Care must be taken with lowly expressed markers.
+
+
+## Clustering
+
+The clustering of the markers and the clusters eases the reading and interpretation and fastens the cluster annotation.
+
+```{r}
+pheatmap(mfis_to_min_max, breaks = seq(0, 1, length.out = 101))
+```
+
+```{r, eval=FALSE}
+# figure for the article
+pheatmap(mfis_to_min_max, breaks = seq(0, 1, length.out = 101), fontsize = 11)
+```
+
+
+## Script session
+
+<details>
+<summary>Session info</summary>
+```{r session_info, echo=FALSE}
+sessionInfo()
+```
+</details>
+
+<br />
+

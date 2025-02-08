@@ -1,0 +1,232 @@
+---
+title: "02_prepare_from_fcs"
+date: "2025-01-30"
+output:
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_float: false
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## Cell counts matrix
+
+
+```{r}
+
+# ==== COUNTS TABLE ============================================================
+
+# read database of counts
+count_long = readxl::read_excel("output/counts_Assignment_db.xlsx")
+count_long$cluster = as.character(count_long$cluster)
+
+
+# ==== SAMPLE TABLE ============================================================
+
+# create sample database
+sample_data = data.frame(file = unique(count_long$file))
+
+# create a simplified sample id
+sample_data$sample_id = sub(".fcs.astrolabe.fcs", "", sample_data$file, fixed = TRUE)
+sample_data$sample_id = sub("_EHA001", "", sample_data$sample_id, fixed = TRUE)
+sample_data$sample_id = sub("_1_Patients", "", sample_data$sample_id, fixed = TRUE)
+# set it as key index of rows
+rownames(sample_data) = sample_data$sample_id
+
+# extract batch, patient id, condition from sample id
+sample_var = Reduce(rbind.data.frame, strsplit(sample_data$sample_id, "_"))
+colnames(sample_var) = c("batch", "patient", "condition")
+# append these columns
+sample_data = cbind(sample_data, sample_var)
+
+# order samples
+order_sample = with(sample_data, order(condition, batch, patient))
+
+
+# ==== CLUSTER TABLE ===========================================================
+
+# read cluster database
+cluster_long = read.csv("input/attachments/Assignment.csv")
+cluster_long$Value = as.character(cluster_long$Value)
+
+
+# ==== MATRIX OF COUNTS ========================================================
+
+# dimension of the matrix of counts
+col_names = sample_data$file[order_sample]
+row_names = cluster_long$Value
+
+# put extracted counts into a matrix
+counts = matrix(0, nrow = length(row_names), ncol = length(col_names),
+                dimnames = list(row_names, col_names))
+counts[cbind(count_long$cluster, count_long$file)] = count_long$counts
+
+# assign comprehensive names
+colnames(counts) = sample_data$sample[order_sample]
+rownames(counts) = cluster_long$CellSubset
+
+
+# ==== FILTER OUT LOW COUNTS ===================================================
+
+# This an optional step that simplifies the Excel processing
+
+# require that a minimal total count
+keep_total = rowSums(counts) > 43 * 50
+# require that at most 75% of counts are zero
+keep_quart = apply(counts, 1, quantile, 0.75) > 0
+kept_clusters = which(keep_total & keep_quart)
+
+# update counts table
+counts = counts[ kept_clusters, ]
+
+
+# ==== VIEW, SAVE ==============================================================
+
+knitr::kable(counts[1:9, 1:5])
+
+counts_df = cbind.data.frame(clusters = rownames(counts), counts)
+writexl::write_xlsx(
+  counts_df, "output/counts_Assignment_matrix.xlsx")
+
+save(
+  counts, sample_data, order_sample, 
+  file = "output/counts_Assignment.RData")
+```
+
+
+## Median Fluorescence Intensity matrix
+
+```{r}
+
+# ==== MFIS TABLE ==============================================================
+
+# read database of mfis
+mfi_long = readxl::read_excel("output/mfi_Assignment_median_db.xlsx")
+mfi_long$cluster = as.character(mfi_long$cluster)
+
+
+# ==== MARKER TABLE ============================================================
+
+# load markers table and retain selected markers
+mrk_long = as.data.frame(
+  readxl::read_excel("output/fcs_markers.xlsx"))
+# filter out useless markers (which removes NA)
+mrk_long = mrk_long[ which(mrk_long$useful == 1), c("name", "desc")]
+
+# reduce MFI table to selected markers
+tbl = merge(mfi_long, mrk_long, by.x = "marker", by.y = "name")
+
+# reduce MFI table to selected clusters
+tbl = merge(
+  tbl, data.frame(cluster = cluster_long$Value[kept_clusters]))
+
+
+# ==== MATRIX OF MFIS ==========================================================
+
+# dimension of the matrix of mfis
+col_names = mrk_long$desc
+row_names = cluster_long$Value[kept_clusters]
+
+# extract MFI DB
+res = with(tbl, aggregate(
+  tbl[, "median_mfi", drop = FALSE], list(marker = desc, cluster = cluster), median))
+# weighted MFI version
+# append counts
+tbl = merge(tbl, as.data.frame(count_long[, c("cluster", "file", "counts")]))
+# split
+resw = split(tbl, ~ desc + cluster)
+# compute for each data chunk
+resw =  lapply(resw, function(df) 
+  list(marker = df$desc[1], cluster = df$cluster[1],
+       median_mfi = limma::weighted.median(df$median_mfi, df$counts)))
+# assemble
+resw = Reduce(rbind.data.frame, resw)
+
+# df = merge(res, resw, by = c("marker", "cluster"))
+# plot(asinh(df$median_mfi.x/5), asinh(df$median_mfi.y/5), asp = 1)
+# library(ggplot2)
+# ggplot(df, aes(asinh(median_mfi.x/5), asinh(median_mfi.y/5))) + geom_point() +
+#   facet_wrap(~marker)
+# ggplot(df, aes(asinh(median_mfi.x/5), asinh(median_mfi.y/5), col = marker)) + geom_point()
+
+# put extracted mfis into a matrix
+mfis = matrix(0, nrow = length(row_names), ncol = length(col_names),
+              dimnames = list(row_names, col_names))
+mfis[cbind(res$cluster, res$marker)] = resw$median_mfi
+
+# assign comprehensive names to clusters
+rownames(mfis) = cluster_long$CellSubset[kept_clusters]
+
+
+# ==== VIEW, SAVE ==============================================================
+
+knitr::kable(mfis[1:9, 1:5])
+
+mfis_df = cbind.data.frame(clusters = rownames(mfis), mfis)
+writexl::write_xlsx(
+  mfis_df, "output/mfis_Assignment_matrix.xlsx")
+
+save(mfis, sample_data, order_sample, file = "output/mfis_Assignment.RData")
+```
+
+
+## Median Fluorescence Intensity matrix per sample
+
+```{r}
+
+# ==== MATRIX OF MFIS PER SAMPLE ===============================================
+
+# extract MFI DB
+res = tbl
+res$key = sprintf("%s $$ %s", res$desc, res$cluster)
+
+# dimension of the matrix of mfis
+col_names = sample_data$file[order_sample]
+row_names_df = expand.grid(
+  cluster = cluster_long$Value[kept_clusters], desc = mrk_long$desc)
+row_names = row_names_df$key = 
+  sprintf("%s $$ %s", row_names_df$desc, row_names_df$cluster)
+
+# put extracted mfis into a matrix
+mfis_samples = matrix(
+  0, nrow = length(row_names), ncol = length(col_names),
+  dimnames = list(row_names, col_names))
+mfis_samples[cbind(res$key, res$file)] = res$median_mfi
+
+row_names_df$key_desc = sprintf(
+  "%s - %s", row_names_df$desc, cluster_long$CellSubset[row_names_df$cluster])
+
+# assign comprehensive names
+colnames(mfis_samples) = sample_data$sample[order_sample]
+rownames(mfis_samples) = row_names_df$key_desc
+
+
+# ==== VIEW, SAVE ==============================================================
+
+knitr::kable(mfis_samples[1:9, 1:5])
+
+mfis_samples_df = cbind.data.frame(
+  "marker - cluster" = rownames(mfis_samples), mfis_samples)
+writexl::write_xlsx(
+  as.data.frame(mfis_samples_df), "output/mfis_samples_Assignment_matrix.xlsx")
+
+save(mfis_samples_df, sample_data, order_sample, 
+     file = "output/mfis_samples_Assignment.RData")
+```
+
+
+## Script session
+
+<details>
+<summary>Session info</summary>
+```{r session_info, echo=FALSE}
+sessionInfo()
+```
+</details>
+
+<br />

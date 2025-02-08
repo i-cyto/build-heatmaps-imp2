@@ -1,0 +1,362 @@
+---
+title: "04_counts_to_heatmap"
+date: "2025-01-31"
+output:
+  html_document:
+    fig_width: 11
+    code_folding: hide
+    toc: true
+    toc_float: false
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE}
+if (!require(pheatmap)) install.packages("pheatmap")
+library(pheatmap)
+if (!require(readxl)) install.packages("readxl")
+```
+
+## Helping functions
+
+In order to simplify the code, we define a heatmap function with some default parameters and some contants.
+
+```{r}
+pheatmap_default <- function(
+    ...,  # all parameters
+    cluster_rows = FALSE,  # no clustering of rows
+    cluster_cols = FALSE,  # no clustering of columns 
+    breaks
+) {
+  if (!missing(breaks)) {
+    if (length(breaks) == 1) breaks = c(-1, 1) * breaks
+    if (length(breaks) == 2) breaks = seq(breaks[1], breaks[2], length.out = 101)
+    pheatmap(
+      ..., cluster_rows = cluster_rows, cluster_cols = cluster_cols, breaks = breaks
+    )
+  } else {
+    pheatmap(
+      ..., cluster_rows = cluster_rows, cluster_cols = cluster_cols
+    )
+  }
+}
+cs_top = "#D73020"
+cs_mid = "#FEFEBF"
+cs_bot = "#4575B4"
+```
+
+
+## Reading Counts
+
+We read the prepared matrix of counts as well as the sample information.
+
+In the matrix of counts, rows are ordered by cell populations and columns are ordered by conditions. Samples of the Acute (resp. Conv) phase are on the left (resp. right). This is a supervised organization.
+
+
+```{r, include=TRUE, eval=FALSE}
+
+# ==== READ COUNTS MATRIX FROM EXCEL ===========================================
+
+tmp = as.data.frame(
+  readxl::read_excel("output/counts_Assignment_matrix.xlsx"))
+counts = as.matrix(tmp[,-1])
+rownames(counts) = tmp[,1]
+
+```
+
+
+```{r}
+
+# ==== READING ALL PREPARED DATA FROM R ========================================
+
+load("output/counts_Assignment.RData")
+
+```
+
+We will start with the display of the raw counts although it is not ready for an interpretation. The logarithm is used to compress the high dynamic range of counts. To avoid the problem of zero that leads to an infinite value that could is not be presented, 1 is added to every count for the display only. 1 has nearly no effect as counts are expected to be much greater.
+
+```{r}
+pheatmap_default(log2(counts+1))
+```
+
+The color covers the range of counts after a logarithm base 2 transformation. Here 15 means 2^15 ~ 33 k cells. We observe that some clusters (rows) have higher counts than others. The right part of the heatmap corresponds to patient in the Conv phase and those samples show higher counts then the left part. Those effects are irrelevant and must be removed to read a meaningful heatmap. Nevertheless, we observe that Dendritic cells Type 2 shows a clear and strong change between the two phases.
+
+
+## Compute frequency matrix after filtering
+
+As the samples don't have the same amount of cells, we compute the frequency to make them comparable.
+
+We can filter the count matrix by removing clusters that have not enough cells, either at the count level or at the frequency level. The frequency matrix must be re-computed if a cluster is removed as total cell count per sample is changed by such a removal.
+
+
+```{r}
+
+# ==== OPTIONAL FILTERING ======================================================
+
+# filter at count level
+
+# remove clusters with lows counts.
+
+
+# ==== COMPUTE FREQUENCY =======================================================
+
+# build a frequency matrix
+freq_raw = sweep(counts, 2, colSums(counts), "/")
+
+
+# ==== OPTIONAL FILTERING ======================================================
+
+# filter at frequency level
+
+# the frequency matrix must be re-computed after the removal of clusters, either
+# using the updated counts matrix or updating the frequencies matrix.
+
+```
+
+After this normalization, we can view the heatmap of frequencies.
+
+```{r}
+log_freq_raw = log2(freq_raw + 100/1e+06)  # add a small value to avoid zero
+pheatmap_default(log_freq_raw)
+```
+
+Most of clusters show a constant level across all samples indicating that their frequency is coarsely constant.
+
+Nevertheless, the dynamic range reflects the difference between the average level of clusters rather than differences within clusters, which is what we are looking for. For example Dendritic Cell Type 1 could benefit of a better contrast to highlight the differences within this cluster.
+
+
+## Relative frequency
+
+When comparing groups of samples, the average frequency of a cluster is not interesting, but its changes between groups are. The normalization aims to relate the frequencies of a cluster across the samples to its average frequency, which leads to relative frequencies. Within a cluster, the ratio between the frequency of two samples equals the ratio of their relative frequency. The interesting point is that all clusters have the same relative frequency average that is 1. Therefore we can view their relative frequencies using the same scale. The units of this scale are ratios of frequency changes or frequency fold changes.
+
+```{r}
+
+# ==== NORMALZING TO MEAN FREQUENCY ============================================
+
+# normalizing: for each cluster, divide by its mean frequency
+freq_rel = sweep(freq_raw, 1, rowMeans(freq_raw), "/")
+```
+
+Because data are relative frequencies, the expected range is from 0 to change of a factor ~10, which is already huge.
+
+```{r}
+pheatmap_default(freq_rel)
+```
+
+This dynamic range is still very large and does not permit to assess the benefit of the normalization by the mean.
+
+We will limit the range to 0 to 2. In this range, 1 is at the middle because it indicates no change, i.e. the observed frequency in a sample equals the average frequency of the cluster.
+
+```{r}
+pheatmap_default(freq_rel, breaks = c(0, 2))
+```
+
+We get a better view of the changes across a cluster between the two conditions.
+
+The chosen color scale is divergent made of two opposed gradients. 1 is the point of reference (of no change), so at the middle of the scale. One gradient goes towards increases up to 2, the other one towards decreases down to 0. Nevertheless, the color scale does not cover the changes in a symmetric way.
+
+
+## Symmetrize and compress range
+
+In a relative scale with 1 being the reference point, 0.5 should be symmetric to 2. 0.5 means that a frequency is 2 times smaller that the average whereas 2 means that the frequency is 2 times bigger than the reference. Said differently, to push 0.5 at the level of 1, 0.5 is to be multiplied by 2. Therefore, 2 and 0.5 are symmetric to 1, and so are 3 and 1/3, etc. We use a logarithm transform to achieve this symmetry around 1, which converts 1 into 0. Moreover, logarithm compress dynamic range which allows presenting high values.
+
+We used logarithm with a basis of 2, which means that every time the value is multiplied by 2 the logarithm of the value is added 1 unit. This transform is typical in omics analyses and somehow similar to qRT-PCR cycles. So relative frequency of 8 is converted into +3 and 1/8 into -3.
+
+The problem with a logarithm transform is that 0 is transformed in minus the infinite. This cannot be represented. Absolute magnitudes (for increases or decreases) greater than 4 or 8 are still indicative when limited to 4 or 8. So, before applying the logarithm transform, the relative frequencies will be limited. When choosing a threshold of 8, relative frequencies bigger than 8 are set to this higher end. Similarly, relative frequency smaller than 1/8 are set to this lower end. Setting a lower limit also permit to cope with relative frequencies of zero. 
+
+```{r}
+
+# ==== THRESHOLD AND LOG2 ======================================================
+
+# threshold relative frequency and convert to log2
+thr = 8
+freq_rel_lim = freq_rel
+freq_rel_lim[ freq_rel_lim > thr ] = thr
+freq_rel_lim[ freq_rel_lim < 1/thr ] = 1/thr
+log2_freq_rel_lim = log2(freq_rel_lim)
+```
+
+
+The transformation between the relative frequency and the logarithm of the limited relative frequency is plotted below.
+
+```{r, fig.width=7}
+plot(freq_rel, log2_freq_rel_lim, main = "Transformation of relative frequencies")
+abline(v = 1, lwd = 3, col = "grey")
+abline(h = 0, lwd = 5, col = "grey")
+abline(h = 0, lwd = 3, col = cs_mid)
+abline(h = c(-1, 1), col = "grey")
+abline(v = c(1/2, 2), col = "grey")
+abline(h = log2(thr), col = cs_top, lwd = 3)
+abline(h = log2(1/thr), col = cs_bot, lwd = 3)
+abline(v = thr, col = cs_top, lwd = 1, lty = 2)
+# abline(v = 1/thr, col = cs_bot, lwd = 1, lty = 2)
+axis(1, tick = T, at = 1/thr, labels = NA, col.ticks = cs_bot, lwd = 3, tcl = 0.5)
+axis(1, tick = T, at = thr, labels = NA, col.ticks = cs_top, lwd = 3, tcl = 0.5)
+points(freq_rel, log2_freq_rel_lim)
+```
+
+The heatmap of the resulting values is presented below.
+
+```{r}
+pheatmap_default(log2_freq_rel_lim, breaks = 3)
+```
+
+The threshold of 8 is maybe too high to really exploit the color scale, especially at the positive end where there are only a few relative frequencies between 4 and 8. We can based the threshold on the percentile at both end of the range of values (5%). It is still important to keep a visual landmark 0 in log scale.
+
+```{r}
+percentile_threshold = 10/100
+2**max(abs(quantile(log2_freq_rel_lim, probs = c(percentile_threshold, 1-percentile_threshold))))
+```
+
+
+We will limit the range to +/-2 (then +/-1) of the log scale.
+
+```{r}
+pheatmap_default(log2_freq_rel_lim, breaks = 2)
+pheatmap_default(log2_freq_rel_lim, breaks = 1)
+```
+
+We have a good visualisation of the relative change of frequency with a range of +/-2 whereas the visualisation becomes too much salt and pepper with a range of +/-1.  The color scale applies to all the values and has the same interpration. The units in these heatmaps are expressing log fold changes of frequency, i.e. +1 unit indicates a change of 2 fold.
+
+
+## Setting a reference group
+
+### Reference group for the average frequency
+
+When computing the relative frequency, we use the average frequency as reference. Relative frequencies are then expressed as relative changes to the average over all the groups. We can decide to define a group as the reference, which make the heatmap more comprehensive and prepares the statistical analyses.
+
+A group could be the **reference mean** instead of the general mean. So the average frequency of clusters for the reference group is zero (in log scale). This allows a direct and clear reading of increases and decreases. As "Conv" group is the reference here, we directly see which clusters increased or decreased during "Acute" phase. Moreover, the remaining variations in the reference group indicates the amount of residual dispersion (or noise). The units in this heatmap are expressing log fold change of frequency.
+
+```{r}
+ref_samples = 44:86
+# normalizing: for each cluster, divide by its mean frequency
+freq_rel = sweep(freq_raw, 1, rowMeans(freq_raw[,ref_samples]), "/")
+freq_rel_lim = freq_rel
+freq_rel_lim[ freq_rel_lim > thr ] = thr
+freq_rel_lim[ freq_rel_lim < 1/thr ] = 1/thr
+log2_freq_rel_lim = log2(freq_rel_lim)
+pheatmap_default(log2_freq_rel_lim, breaks = 2)
+```
+
+Here the units are still representing fold changes of frequency. Defining a reference group only changes the origin, not the meaning of the fold changes.
+
+
+### Reference group for the average frequency and noise
+
+Previously, the scaling didn't use the standard deviation per cluster to achieve a specific contrast setting for each cluster. When the standard deviation is defined on all the data, ignoring groups, it will encompass the difference between groups rather than only the variation within groups. This is correct if don't have/use prior knowledge. But it is better to use one group (or average across groups), in order to avoid mixing between groups variations and within group variations.
+
+So, a group could be the **reference mean** and **reference standard deviation** for interpreting the changes in all other groups. So the reference group defines the average frequency for computing the relative frequencies. The relative frequencies are then scaled so that their standard deviation in the reference group equals 1.
+
+```{r}
+log2_freq_rel_lim_std = sweep(
+  log2_freq_rel_lim, 1, apply(log2_freq_rel_lim[,ref_samples], 1, sd), "/")
+pheatmap_default(log2_freq_rel_lim_std, breaks = 2)
+```
+
+In the heatmap, the reference group has a similar average level across clusters, and its dispersion is also homogeneous across clusters.
+
+Now the units relate to the dispersion, not to ratios of frequencies. This standardisation highlight changes relatively to the dispersion or noise, which is similar to statistical tests.
+
+Here, there only a few visual changes from the previous heatmap as the dispersion is homogeneous across all clusters in the reference group, but in the essence, the interpretation is different.
+
+
+## Hierarchical clustering
+
+Until now the heatmaps were supervised as the organization of rows and columns are defined by the user. The hierarchical clustering allows to let the data organize itself. Profiles across rows and/or columns that look similar will be placed near each other. The similarity is based on a distance, usually the euclidean distance.
+
+```{r}
+pheatmap_default(log2_freq_rel_lim_std, cluster_rows = TRUE, cluster_cols = FALSE, breaks = 2)
+```
+
+```{r}
+pheatmap_default(log2_freq_rel_lim_std, cluster_rows = TRUE, cluster_cols = TRUE, breaks = 2)
+```
+
+
+## Adding annotation
+
+```{r}
+pheatmap_default(
+  log2_freq_rel_lim_std, cluster_rows = TRUE, cluster_cols = TRUE, 
+  breaks = 2, annotation_col = sample_data[, c("condition", "batch")])
+```
+
+
+
+```{r, eval=FALSE}
+# figure for the article
+# 1500 x 600
+pheatmap_default(
+  log2_freq_rel_lim_std, cluster_rows = TRUE, cluster_cols = TRUE, 
+  breaks = 2, annotation_col = sample_data[, c("condition", "batch")], fontsize = 11, fontsize_col = 8)
+# 1500 x 530
+pheatmap_default(
+  log2_freq_rel_lim_std, cluster_rows = TRUE, cluster_cols = FALSE, 
+  breaks = 2, annotation_col = sample_data[, c("condition", "batch")], fontsize = 11, fontsize_col = 8)
+```
+
+
+We relate the frequencies to the arithmetical average of frequencies which is different from the average of log frequencies that is the geometric mean. We consider the arithmetic average as a reasonable estimation of the frequency (proportional to count). The arithmetical average is always strictly positive, as a cluster with no cell does not exist or is removed from the analysis 
+
+NB computing log before is tricky: zero leads to NA, it is easier to estimate the mean before log then to assess the contribution of each sample to the sum or in comparison to the mean, although log(mean) is not mean(log), the latter being the geometric mean.
+
+
+## Alternative scaling
+
+
+An alternative transform aims to keep the factor linear, but still with a symetrization. Thus, a relative frequency of 8 is converted to +7, i.e. +700%, and 1/8 into -7. Here we limit the range to +/-4.
+
+```{r}
+# ==== ALT. CONVERSION =========================================================
+
+# threshold and convert to linear increase
+thr = 4
+freq_rel_lim = freq_rel
+freq_rel_lim[ freq_rel_lim > thr ] = thr
+freq_rel_lim[ freq_rel_lim < 1/thr ] = 1/thr
+lin_freq_rel_lim = freq_rel_lim - 1
+lin_freq_rel_lim[ lin_freq_rel_lim < 0 ] = 1 - 1 / (1 + lin_freq_rel_lim[ lin_freq_rel_lim < 0 ])
+```
+
+```{r}
+plot(freq_rel, lin_freq_rel_lim)
+abline(h = 0, lwd = 3)
+abline(v = 1, lwd = 3)
+abline(h = c(-1, 1))
+abline(v = c(1/2, 2))
+```
+
+The transform is similar to the logarithm transform without the compression effect.
+
+The heatmap is obtained as previously and could be tuned in the same way.
+
+```{r}
+pheatmap_default(lin_freq_rel_lim)
+pheatmap_default(lin_freq_rel_lim, breaks = seq(-1, 1, length.out = 101)*2)
+```
+
+These graphics are also informative.
+
+
+```{r, eval = FALSE}
+plot(lin_freq_rel_lim, log2_freq_rel_lim)
+abline(h = 0, lwd = 3)
+abline(v = 0, lwd = 3)
+```
+
+
+
+## Script session
+
+<details>
+<summary>Session info</summary>
+```{r session_info, echo=FALSE}
+sessionInfo()
+```
+</details>
+
+<br />
+

@@ -1,0 +1,272 @@
+---
+title: "01_extract_from_fcs_to_db"
+date: "2025-01-30"
+output:
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_float: false
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r libraries, include=FALSE}
+# check installation
+packages <- c("flowCore", "plyr", "reshape2", "openxlsx", "tidyr")
+newPackages <- packages[ ! (packages %in% installed.packages()[,"Package"]) ]
+if (length(newPackages)) install.packages(newPackages)
+rm(packages, newPackages)
+
+# load libraries
+library(flowCore)
+library(plyr)
+library(reshape2)
+library(openxlsx)
+library(tidyr)
+```
+
+
+## Parameters
+
+```{r parameters, class.source='fold-show bg-warning'}
+# Path to the directory
+in_path <- "input"
+out_path <-"extract"
+# 
+clustCols <- c("Profiling", "Assignment")
+intensity_feat <- c("mean", "median")
+intensity_func <- list(
+  "mean" = base::mean,
+  "median" = stats::median
+)
+markers_to_ignore <- c("Time", "Event_length")
+```
+
+## helpers
+
+```{r helpers}
+if ("tictoc" %in% rownames(installed.packages())) {
+  library(tictoc)
+} else {
+  toc <- tic <- function(...) return()
+}
+```
+
+
+## Read annotations
+
+```{r init}
+stopifnot(dir.exists(in_path))
+stopifnot(dir.exists(file.path(in_path, "fcs")))
+if (!dir.exists(out_path)) dir.create(out_path)
+# get fname files
+list_fcs <- list.files(path = file.path(in_path, "fcs"), pattern = "\\.fcs$")
+stopifnot(length(list_fcs) > 0)
+knitr::kable(data.frame("fname_files" = list_fcs[1:9]))
+# load annotation
+tmp_path <- file.path(in_path, "attachments")
+stopifnot(dir.exists(tmp_path))
+cluster_id2name <- list()
+for (clustCol in clustCols) {
+  cluster_id2name[[clustCol]] <- read.csv(file.path(tmp_path, paste0(clustCol, ".csv")))
+}
+for (clustCol in clustCols) {
+  print(knitr::kable(cluster_id2name[[clustCol]][1:9,]))
+}
+rm(tmp_path)
+```
+
+
+## Parse FCS files
+
+```{r}
+fcs_stat <- list()
+fcs_length<- list()
+# list("MFI"= NULL, "counts" = NULL)
+
+# clustCol = "Profiling"
+# fcs_stat[[clustCol]] <- list("MFI" = NULL, "abundance" = NULL)
+tic("Parsing FCS")
+for (fname in list_fcs) {
+  
+  # fname = list_fcs[1]
+  cat(fname, "\n")
+  # read fname
+  fcs <- read.FCS(file.path(in_path, "fcs", fname), 
+                  transformation = FALSE, truncate_max_range = FALSE)
+  exprs <- exprs(fcs)
+  fcs_length[[fname]] <- nrow(fcs)
+  
+  for (clustCol in clustCols) {
+    
+    # Extract features from intensity
+    for (fct_ in intensity_feat) {
+      func <- intensity_func[[fct_]]
+      value_feat <- aggregate(exprs, list(cluster = exprs[,clustCol]), func)
+      value_feat$file <- fname
+      fcs_stat[[clustCol]][["MFI"]][[fct_]][[fname]] <- value_feat
+    }
+    
+    # Extract counts
+    counts <- count(exprs[,clustCol])
+    counts$file <- fname
+    colnames(counts) <- c("cluster", "counts", "file")
+    
+    counts$freq_by_patients <- counts$counts / nrow(exprs)
+    fcs_stat[[clustCol]][["abundance"]][[fname]] <- counts
+    
+  }
+  
+}
+toc()
+```
+
+
+## MFI workbooks
+
+```{r}
+for (clustCol in clustCols) {
+
+  for (fct_ in intensity_feat) {
+    
+    # fct_ = "median"
+    # Put MFI in shape
+    MFI <- do.call("rbind", fcs_stat[[clustCol]][["MFI"]][[fct_]])
+    markers <- setdiff(colnames(MFI), c("cluster", "file", markers_to_ignore, clustCols))
+    
+    list_MFI_marker <- list()
+    cluster_ids_def <- list()
+    for (mrk in markers) {
+      MFI_marker <- MFI[,c(mrk, "file", "cluster")]
+      MFI_marker <- dcast(MFI_marker, file ~ cluster, value.var = mrk)
+      rownames(MFI_marker) <- MFI_marker$file
+      MFI_marker <- MFI_marker[, setdiff(colnames(MFI_marker), "file")]
+      list_MFI_marker[[clustCol]][[mrk]] <- MFI_marker
+      
+      present_clusters <- colnames(MFI_marker)
+      cluster_ids_def[[clustCol]][[mrk]] <- t(cluster_id2name[[clustCol]][present_clusters,])[2,] 
+    }
+
+    # save to xlxs
+    wb <- createWorkbook()
+    for (mrk in names(list_MFI_marker[[clustCol]])){
+      addWorksheet(wb, mrk)
+      ids_clust <- t(cluster_ids_def[[clustCol]][[mrk]])
+      rownames(ids_clust)<- "CellSubset"
+      writeData(wb, ids_clust, sheet = mrk, rowNames = T, colNames = T)
+      writeData(wb, list_MFI_marker[[clustCol]][[mrk]], sheet = mrk, rowNames = T, colNames = F, startRow =3)
+    }
+    saveWorkbook(wb, file.path(out_path, paste0("mfi_",clustCol,"_",fct_,".xlsx")), TRUE)
+    
+  }
+  
+}
+```
+
+
+## Counts workbooks
+
+```{r}
+for (clustCol in clustCols) {
+
+  # clustCol = "Assignment"
+  # Put abundance in shape
+  counts <- do.call("rbind", fcs_stat[[clustCol]][["abundance"]])
+  counts$cluster <- as.factor(counts$cluster)
+
+  total_counts_per_cluster <- tapply(counts$counts, counts$cluster, sum)
+  counts$freq_per_clusters <- counts$counts / total_counts_per_cluster[as.character(counts$cluster)]
+  
+  counts_wide <- dcast(counts, cluster ~ file, value.var = "counts")
+  freqs_patients_wide <- dcast(counts, cluster ~ file, value.var = "freq_by_patients")
+  freqs_clusters_wide <- dcast(counts, cluster ~ file, value.var = "freq_per_clusters")
+}
+```
+
+
+## Abundance DB
+
+```{r}
+abundance <- list()
+
+for (clustCol in clustCols) {
+
+  # clustCol = "Assignment"
+  # all-in-one
+  counts <- do.call("rbind", fcs_stat[[clustCol]][["abundance"]])
+  counts$cluster <- as.factor(counts$cluster)
+
+  # freq per cluster
+  total_counts_per_cluster <- tapply(counts$counts, counts$cluster, sum)
+  counts$freq_per_clusters <- counts$counts / 
+    total_counts_per_cluster[as.character(counts$cluster)]
+  
+  # extract meta data
+  abundance[[clustCol]] <- counts |>
+    dplyr::select(
+      cluster, file, counts, freq_by_patients, freq_per_clusters) |>
+    tidyr::extract(
+      file, into = c("patient", "condition"),
+      regex = "\\w+_(\\d+)_\\d+_Patients_(\\w+)\\.fcs\\..+", remove = F)  
+  
+  # write xlxs
+  wb2 <- createWorkbook()
+  shn <- paste0("abundance_", clustCol)
+  addWorksheet(wb2, sheet = shn)
+  writeData(wb2, abundance[[clustCol]], sheet = shn)
+  saveWorkbook(wb2, file.path(out_path, paste0(shn, "_db.xlsx")), TRUE)
+
+}
+
+### ncells by fcs 
+
+tibble::enframe(fcs_length, name = "file", value = "n_cells") |>
+  tidyr::extract(
+    file, into = c("patient", "condition"),
+    regex = "\\w+_(\\d+)_\\d+_Patients_(\\w+)\\.fcs\\..+", remove =F)  -> number_of_cells_fcs
+
+write.xlsx(number_of_cells_fcs, file.path(out_path, "number_of_cells_fcs.xlsx"))
+```
+
+
+## MFI DB
+
+```{r}
+### Profiling MFI
+
+for (clustCol in clustCols) {
+
+  Profiling_median_l <- list()
+
+  for (fct_ in intensity_feat) {
+    
+    Profiling_median_l[[fct_]] <- 
+      do.call("rbind", fcs_stat[[clustCol]][["MFI"]][[fct_]])[c(markers, "cluster", "file")] |>
+      pivot_longer(cols = all_of(markers), names_to = "marker", values_to = paste0(fct_, "_mfi"))
+
+  }
+
+  MFI_Profiling_db <- Reduce(merge, Profiling_median_l) |>
+    tidyr::extract(
+      file, into = c("patient", "condition"),
+      regex = "\\w+_(\\d+)_\\d+_Patients_(\\w+)\\.fcs\\..+", remove =F)
+  
+  write.xlsx(MFI_Profiling_db, file.path(out_path, paste0("mfi_", clustCol, "_db.xlsx")))
+}
+```
+
+
+## Script session
+
+<details>
+<summary>Session info</summary>
+```{r session_info, echo=FALSE}
+sessionInfo()
+```
+</details>
+
+<br />
