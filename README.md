@@ -18,10 +18,10 @@ The aim is to understand the steps for building heatmaps of frequencies. Data fi
 
 Extensive R scripts are available below as well as the preparation script.
 
-1. [01_extract_from_fcs_to_db](01_extract_from_fcs_to_db.html) _[Rmd]_(01_extract_from_fcs_to_db.Rmd)
-2. [02_prepare_from_extraction.html](02_prepare_from_extraction.html) _[Rmd]_(02_prepare_from_extraction.html)
-3. [03_mfis_to_heatmap.html](03_mfis_to_heatmap.html) _[Rmd]_(03_mfis_to_heatmap.html)
-4. [04_counts_to_heatmap.html](04_counts_to_heatmap.html) _[Rmd]_(04_counts_to_heatmap.html)
+1. [01_extract_from_fcs_to_db](01_extract_from_fcs_to_db.html) [Rmd](01_extract_from_fcs_to_db.Rmd)
+2. [02_prepare_from_extraction.html](02_prepare_from_extraction.html) [Rmd](02_prepare_from_extraction.Rmd)
+3. [03_mfis_to_heatmap.html](03_mfis_to_heatmap.html) [Rmd](03_mfis_to_heatmap.Rmd)
+4. [04_counts_to_heatmap.html](04_counts_to_heatmap.html) [Rmd](04_counts_to_heatmap.Rmd)
 
 
 ## Contact
